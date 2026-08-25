@@ -1,6 +1,7 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from src.predict import predict_transaction
+import pandas as pd
+import io
 
 
 app = FastAPI(
@@ -10,39 +11,18 @@ app = FastAPI(
 )
 
 
-class Transaction(BaseModel):
-    Time: float
-    V1: float
-    V2: float
-    V3: float
-    V4: float
-    V5: float
-    V6: float
-    V7: float
-    V8: float
-    V9: float
-    V10: float
-    V11: float
-    V12: float
-    V13: float
-    V14: float
-    V15: float
-    V16: float
-    V17: float
-    V18: float
-    V19: float
-    V20: float
-    V21: float
-    V22: float
-    V23: float
-    V24: float
-    V25: float
-    V26: float
-    V27: float
-    V28: float
-    Amount: float
+# Features expected by the trained model
+REQUIRED_COLUMNS = [
+    "Time",
+    "V1", "V2", "V3", "V4", "V5", "V6", "V7",
+    "V8", "V9", "V10", "V11", "V12", "V13", "V14",
+    "V15", "V16", "V17", "V18", "V19", "V20", "V21",
+    "V22", "V23", "V24", "V25", "V26", "V27", "V28",
+    "Amount"
+]
 
 
+# Home endpoint
 @app.get("/")
 def home():
     return {
@@ -51,11 +31,71 @@ def home():
     }
 
 
-@app.post("/predict")
-def predict(transaction: Transaction):
+# CSV prediction endpoint
+@app.post("/predict-csv")
+async def predict_csv(file: UploadFile = File(...)):
 
-    transaction_data = transaction.model_dump()
+    # Check whether the uploaded file is a CSV
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a CSV file."
+        )
 
-    result = predict_transaction(transaction_data)
+    # Read the uploaded file
+    contents = await file.read()
 
-    return result
+    try:
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the CSV file."
+        )
+
+    # Check whether all required columns are present
+    missing_columns = [
+        column
+        for column in REQUIRED_COLUMNS
+        if column not in df.columns
+    ]
+
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing columns: {missing_columns}"
+        )
+
+    # Store prediction results
+    results = []
+
+    # Predict each transaction
+    for index, row in df.iterrows():
+
+        # Select only the required features
+        transaction_data = row[REQUIRED_COLUMNS].to_dict()
+
+        # Get prediction from our trained model
+        prediction = predict_transaction(transaction_data)
+
+        # Store result
+        results.append({
+            "transaction_id": int(index),
+            "amount": float(row["Amount"]),
+            **prediction
+        })
+
+    # Count fraud transactions
+    fraud_alerts = sum(
+        1
+        for result in results
+        if result["prediction"] == "FRAUD"
+    )
+
+    # Return final response
+    return {
+        "total_transactions": len(df),
+        "fraud_alerts": fraud_alerts,
+        "normal_transactions": len(df) - fraud_alerts,
+        "results": results
+    }
